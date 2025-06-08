@@ -1,0 +1,11 @@
+[Lỗi] u050IdUd8JY - Item u050IdUd8JY not found
+[Lỗi] u050IdUd8JY - [0;31mERROR:[0m [download] Got error: The read operation timed out
+[Lỗi] u050IdUd8JY - [0;31mERROR:[0m [download] Got error: timed out
+[Lỗi] u050IdUd8JY - [0;31mERROR:[0m [download] Got error: The read operation timed out
+[Lỗi] u050IdUd8JY - [0;31mERROR:[0m [download] Got error: The read operation timed out
+[Lỗi] u050IdUd8JY - [0;31mERROR:[0m [download] Got error: The read operation timed out
+[Lỗi] u050IdUd8JY - [0;31mERROR:[0m [download] Got error: The read operation timed out
+[Lỗi] u050IdUd8JY - [0;31mERROR:[0m [download] Got error: [WinError 10054] An existing connection was forcibly closed by the remote host
+[Lỗi] u050IdUd8JY - [0;31mERROR:[0m unable to download video data: HTTP Error 416: Requested range not satisfiable
+[Lỗi] AoLBovUkluo - [0;31mERROR:[0m [download] Got error: The read operation timed out
+[Lỗi] 4H6lnWddaUk - [0;31mERROR:[0m [download] Got error: The read operation timed out
