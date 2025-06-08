@@ -3,6 +3,7 @@ from tkinter import filedialog, ttk, messagebox
 import threading
 import os
 import re
+import time
 import logging
 from urllib.parse import urlparse, parse_qs
 from concurrent.futures import ThreadPoolExecutor
@@ -10,6 +11,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Set
 import yt_dlp
 import webbrowser
+from functools import partial
 
 
 @dataclass
@@ -75,8 +77,7 @@ class URLValidator:
     @classmethod
     def clean_url(cls, url: str) -> str:
         """Clean and normalize YouTube URL"""
-        match = cls.WATCH_URL_PATTERN.search(url)
-        return match.group(1) if match else url
+        return url.strip()
     
     @classmethod
     def validate_and_clean_urls(cls, raw_urls: List[str]) -> tuple[List[str], List[str]]:
@@ -110,6 +111,8 @@ class YouTubeDownloaderApp:
         self.selected_items: Set[str] = set()
         self.progress_tracker = ProgressTracker()
         self.executor = ThreadPoolExecutor(max_workers=4)
+        self.pause_event = threading.Event()
+        self.pause_event.set()  # Cho phép chạy mặc định
         
         # UI variables
         self.folder_var = tk.StringVar()
@@ -221,7 +224,17 @@ class YouTubeDownloaderApp:
         mode_frame = tk.Frame(self.root)
         mode_frame.grid(row=2, column=1, columnspan=2, sticky='w')
         tk.Radiobutton(mode_frame, text="Video", variable=self.mode_var, value="video").pack(side='left')
-        tk.Radiobutton(mode_frame, text="Playlist", variable=self.mode_var, value="playlist").pack(side='left')
+        def on_playlist_selected():
+            self.mode_var.set("playlist")
+            messagebox.showinfo(
+                "Chú ý",
+                "Playlist YouTube phải ở chế độ **công khai**.\nNếu ở chế độ **riêng tư** thì **không tải được**!"
+            )
+
+        tk.Radiobutton(
+            mode_frame, text="Playlist", variable=self.mode_var, value="playlist",
+            command=on_playlist_selected
+        ).pack(side='left')
         
         # Folder selection
         tk.Label(self.root, text="Thư mục lưu:").grid(row=3, column=0, sticky='w', padx=10)
@@ -239,6 +252,18 @@ class YouTubeDownloaderApp:
             state="readonly"
         )
         quality_combo.grid(row=4, column=1, sticky='w')
+
+        # Playlist limit selection
+        tk.Label(self.root, text="Giới hạn playlist:").grid(row=4, column=2, sticky='w', padx=10)
+        self.playlist_limit_var = tk.StringVar(value="100")
+        playlist_limit_combo = ttk.Combobox(
+            self.root,
+            textvariable=self.playlist_limit_var,
+            values=["100", "200", "500", "Tất cả"],
+            state="readonly",
+            width=10
+        )
+        playlist_limit_combo.grid(row=4, column=3, sticky='w')
     
     def _create_video_list(self):
         """Create video list treeview"""
@@ -272,6 +297,8 @@ class YouTubeDownloaderApp:
         buttons = [
             ("Phân tích", self._analyze_urls),
             ("Tải xuống", self._download_selected),
+            ("Tạm dừng / Tiếp tục", self._toggle_pause),
+            ("Tải lại lỗi", self._retry_failed_downloads),
             ("Chọn tất cả", self._select_all),
             ("Bỏ chọn tất cả", self._deselect_all),
             ("Lưu danh sách", self._save_urls),
@@ -354,43 +381,23 @@ class YouTubeDownloaderApp:
             self.root.after(0, self._hide_progress)
     
     def _process_url(self, url: str):
-        """Process a single URL and extract video information"""
         try:
-            # Show processing status
             self.root.after(0, lambda: self._update_status(f"Đang xử lý: {url[:50]}..."))
-            
+
+            # Gọi hàm xử lý và hiển thị trực tiếp trong _extract_playlist_info
             video_infos = self._get_video_info(url)
-            
+
             if not video_infos:
                 self.root.after(0, lambda: self._update_status(f"Không thể trích xuất thông tin từ: {url}"))
                 return
-            
-            # Process each video info
-            processed_count = 0
-            for info in video_infos:
-                if info and info.get('id'):
-                    video = VideoInfo(
-                        id=info.get("id", "unknown"),
-                        title=self._clean_title(info.get("title", "Không rõ")),
-                        duration=self._format_duration(info.get("duration", 0)),
-                        url=f"https://www.youtube.com/watch?v={info.get('id')}"
-                    )
-                    
-                    # Avoid duplicates
-                    if video.id not in self.videos:
-                        self.videos[video.id] = video
-                        self.selected_items.add(video.id)
-                        processed_count += 1
-                        
-                        # Update UI in main thread
-                        self.root.after(0, lambda v=video: self._add_video_to_tree(v))
-            
-            self.logger.info(f"Processed {processed_count} videos from {url}")
-            
+
+            # Chỉ ghi log, không thêm vào Treeview nữa
+            self.logger.info(f"Đã xử lý {len(video_infos)} video từ {url}")
+
         except Exception as e:
             self.logger.error(f"Error processing URL {url}: {e}")
             self.root.after(0, lambda: self._update_status(f"Lỗi xử lý URL: {str(e)[:50]}..."))
-    
+
     def _clean_title(self, title: str) -> str:
         """Clean and truncate video title"""
         if not title:
@@ -425,64 +432,102 @@ class YouTubeDownloaderApp:
         )
     
     def _extract_playlist_info(self, url: str) -> List[dict]:
-        """Extract all videos from a playlist"""
-        # Configure yt-dlp for playlist extraction
         ydl_opts = {
-            'quiet': True,
+            'quiet': False,
             'skip_download': True,
-            'extract_flat': False,  # Important: set to False to get full video info
+            'extract_flat': True,      # Lấy danh sách video đơn giản
             'no_warnings': True,
-            'ignoreerrors': True,  # Continue on errors
-            'playlistend': 500,  # Limit to prevent infinite playlists
+            'ignoreerrors': True,
+            'noplaylist': False        # Cho phép tải cả playlist
         }
-        
-        # Ensure we have a proper playlist URL
-        parsed_url = urlparse(url)
-        query_params = parse_qs(parsed_url.query)
-        
-        if 'list' in query_params:
-            playlist_id = query_params['list'][0]
-            playlist_url = f"https://www.youtube.com/playlist?list={playlist_id}"
-        elif '/playlist?' in url:
-            playlist_url = url
-        else:
-            # If it's a video URL but we want to treat as playlist
-            playlist_url = url
-        
+
+        video_list = []
+
         try:
+            parsed_url = urlparse(url)
+            query_params = parse_qs(parsed_url.query)
+
+            if 'list' in query_params:
+                playlist_id = query_params['list'][0]
+                playlist_url = f"https://www.youtube.com/playlist?list={playlist_id}"
+            else:
+                playlist_url = url
+
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 self.root.after(0, lambda: self._update_status("Đang quét playlist..."))
-                
-                # Extract playlist info
+
                 playlist_info = ydl.extract_info(playlist_url, download=False)
-                
+
                 if not playlist_info:
                     return []
+
+                entries = playlist_info.get('entries', [])
+                total = len(entries)
+
+                self.root.after(0, lambda: messagebox.showinfo(
+                "Playlist phát hiện",
+                f"Playlist có {total} video."
+            ))
+
+            # Lấy giới hạn từ Combobox
+            limit_str = self.playlist_limit_var.get()
+            if limit_str == "Tất cả" and total > 500:
+                self.root.after(0, lambda: messagebox.showwarning(
+                "Cảnh báo hiệu năng",
+                f"Playlist có {total} video.\nTải toàn bộ có thể mất nhiều thời gian hoặc làm chậm ứng dụng."
+            ))
                 
-                # Handle both playlist and single video cases
-                if 'entries' in playlist_info and playlist_info['entries']:
-                    # Filter out None entries and extract valid videos
-                    valid_entries = []
-                    total_entries = len(playlist_info['entries'])
-                    
-                    for i, entry in enumerate(playlist_info['entries']):
-                        if entry is not None and entry.get('id'):
-                            valid_entries.append(entry)
-                            
-                            # Update progress for playlist scanning
-                            progress = (i + 1) / total_entries * 100
-                            self.root.after(0, lambda p=progress: self._update_status(
-                                f"Đang quét playlist: {len(valid_entries)}/{total_entries} video ({p:.1f}%)"
-                            ))
-                    
-                    self.logger.info(f"Extracted {len(valid_entries)} videos from playlist")
-                    return valid_entries
-                else:
-                    # Single video
-                    return [playlist_info] if playlist_info.get('id') else []
-                    
+                try:
+                    limit = int(limit_str)
+                    if total > limit:
+                        self.root.after(0, lambda: messagebox.showwarning(
+                            "Giới hạn playlist",
+                            f"Chỉ tải {limit} video đầu tiên trong số {total} video."
+                        ))
+                        entries = entries[:limit]
+                        total = limit
+                except ValueError:
+                    self.logger.warning("Không thể đọc giới hạn playlist từ Combobox.")
+
+                for index, entry in enumerate(entries):
+                    while not self.pause_event.is_set():
+                        time.sleep(0.1)
+
+                    if not entry or not entry.get('url'):
+                        continue
+
+                    try:
+                        # Lấy đầy đủ thông tin video
+                        video_info = ydl.extract_info(entry['url'], download=False)
+                        if not video_info or 'id' not in video_info:
+                            continue
+
+                        video = VideoInfo(
+                            id=video_info['id'],
+                            title=self._clean_title(video_info.get('title', "Không rõ")),
+                            duration=self._format_duration(video_info.get("duration", 0)),
+                            url=f"https://www.youtube.com/watch?v={video_info['id']}"
+                        )
+
+                        if video.id not in self.videos:
+                            self.videos[video.id] = video
+                            self.selected_items.add(video.id)
+                            self.root.after(0, self._add_video_to_tree, video)
+
+                        # Cập nhật tiến độ
+                        progress = (index + 1) / total * 100
+                        msg = f"Đang quét playlist: {index+1}/{total} video ({progress:.1f}%)"
+                        self.root.after(0, partial(self._update_status, msg))
+
+                        video_list.append(video_info)
+
+                    except Exception as e:
+                        self.logger.error(f"Lỗi khi tải video {entry.get('url', 'unknown')}: {e}")
+
+            return video_list
+
         except Exception as e:
-            self.logger.error(f"Error extracting playlist {url}: {e}")
+            self.logger.error(f"Lỗi khi trích xuất playlist {url}: {e}")
             self.root.after(0, lambda: self._update_status(f"Lỗi quét playlist: {str(e)[:50]}..."))
             return []
     
@@ -530,6 +575,9 @@ class YouTubeDownloaderApp:
         
         futures = []
         for video_id in video_ids:
+            while not self.pause_event.is_set():
+                time.sleep(0.1)
+
             if video_id in self.videos:
                 future = self.executor.submit(self._download_single_video, video_id)
                 futures.append(future)
@@ -641,6 +689,22 @@ class YouTubeDownloaderApp:
         if item:
             if messagebox.askyesno("Xoá", f"Xoá video '{self.videos[item].title}'?"):
                 self._remove_video(item)
+
+    def _toggle_pause(self):
+        if self.pause_event.is_set():
+            self.pause_event.clear()
+            self._update_status("⏸ Đã tạm dừng")
+        else:
+            self.pause_event.set()
+            self._update_status("▶️ Tiếp tục")
+
+    def _retry_failed_downloads(self):
+        failed_ids = [vid_id for vid_id, video in self.videos.items() if video.status == "Lỗi"]
+        if not failed_ids:
+            messagebox.showinfo("Thông báo", "Không có video lỗi để tải lại.")
+            return
+        self._update_status(f"Đang tải lại {len(failed_ids)} video bị lỗi...")
+        threading.Thread(target=self._download_worker, args=(failed_ids,), daemon=True).start()
     
     def _toggle_selection(self, video_id: str):
         """Toggle video selection"""
