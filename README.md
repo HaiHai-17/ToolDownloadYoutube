@@ -2,7 +2,8 @@
 
 Một ứng dụng giao diện đồ họa (GUI) đơn giản nhưng mạnh mẽ để tải video và âm thanh từ YouTube. Ứng dụng được xây dựng bằng **Python**, sử dụng thư viện **yt-dlp** để xử lý tải video và **Tkinter** để tạo giao diện.
 
-![Giao diện chính]![image](https://github.com/user-attachments/assets/ee6a3be3-10b1-4d44-a18b-eb5508d5609c)
+![Giao diện chính]![image](https://github.com/user-attachments/assets/d2f5af6f-c4af-4414-b4ac-e188c01e010b)
+
 
 ## 🚀 Tính năng nổi bật
 
